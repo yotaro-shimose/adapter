@@ -1,0 +1,17 @@
+[project]
+name = "adapter"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "docker>=7.1.0",
+    "litellm>=1.80.10",
+    "loguru>=0.7.3",
+    "oai-wrapper>=0.1.0",
+    "openai-agents>=0.6.3",
+    "pydantic>=2.12.5",
+    "python-dotenv>=1.2.1",
+    "swe-rex>=1.4.0",
+]
+
