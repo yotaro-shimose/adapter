@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 from agents import RunContextWrapper, function_tool
+from agents.tool import FunctionTool
 from swerex.deployment.abstract import AbstractDeployment
 from swerex.runtime.abstract import (
     BashAction,
@@ -41,6 +42,15 @@ class ProgrammingEnvironment[T: AbstractDeployment]:
         success = result.exit_code == 0
 
         return success
+
+    @classmethod
+    def tools(cls) -> list[FunctionTool]:
+        return [
+            read_file,
+            write_file,
+            run_command,
+            submit,
+        ]
 
 
 @function_tool

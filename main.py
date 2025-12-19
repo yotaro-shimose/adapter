@@ -1,9 +1,9 @@
+from adapter.questioner.verify import verify_problem
 from pathlib import Path
 
 from swerex.deployment.docker import DockerDeployment
 
 from adapter.env import ProgrammingEnvironment
-from adapter.questioner import create_question, verify_problem
 from adapter.solver import ProblemSolver
 
 
@@ -11,7 +11,8 @@ async def main():
     doc_path = Path("json_schema.md")
     document = doc_path.read_text()
 
-    problem = await create_question(document)
+    # problem = await create_question(document)
+    problem = ...
     print(problem.as_md())
     print("Verifying problem...")
     deployment = DockerDeployment(image="sandbox-ver0")

@@ -1,3 +1,4 @@
+from adapter.models.problems import VerifiableProblem
 from dataclasses import dataclass
 from textwrap import dedent
 from typing import Self
@@ -13,7 +14,6 @@ from adapter.env import (
     submit,
     write_file,
 )
-from adapter.problem import VerifiableProblem
 
 
 @dataclass

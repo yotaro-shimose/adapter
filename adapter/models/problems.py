@@ -27,5 +27,10 @@ class VerifiableProblem(Savable):
         )
 
 
+class QAProblem(Savable):
+    question: str
+    answer: str
+
+
 class ProblemDataset(Savable):
-    problems: list[VerifiableProblem]
+    problems: list[VerifiableProblem | QAProblem]
