@@ -8,28 +8,33 @@ from agents.model_settings import ModelSettings
 
 
 async def create_qa(
-    local_dir: Path, file_path: str, topic: Topic, filesystem_mcp: MCPServerStdio
+    local_dir: Path,
+    file_path: str,
+    topic: Topic,
+    filesystem_mcp: MCPServerStdio,
+    max_turns: int = 20,
 ) -> QAProblem | None:
-    prompt = """\
+    prompt = f"""\
 You are an expert Python technical interviewer and library documentation specialist.
 Your goal is to create a high-quality, self-contained question and answer pair based on the provided library documentation snippet.
 
 ### Guidelines for a "Self-Contained" Question:
-1.  **Contextual Setup**: Provide enough context to establish the scenario (e.g., "A developer is using the pandas Dataframe API to merge datasets"). You must identify the specific classes, methods, modules or concepts involved so the question is self-contained.
+1.  **Contextual Setup**: Provide enough context to establish the scenario (e.g., "A developer is using the pandas Dataframe API to merge datasets", "When finetuning Llama with Huggingface Transformers"). You must identify the specific classes, methods, modules or concepts involved so the question is self-contained.
     HOWEVER, you must not explain the logic or rules of those methods (e.g., do not explain the difference between an inner or outer join, or how a specific aggregation is calculated).
     The solver should deduce the behavior based on their knowledge of the library's design.
-2.  **Conceptual over Verbatim**: Test the "why" and "how" of the library's design patterns rather than asking for specific method names or definitions found in the text.
+2.  **Conceptual over Verbatim**: Test the usage, concepts of the library instead of asking specific document content verbatim. You should not mention `The README` or `The documentation`.
 3.  **No Meta-References**: Do not use phrases like "According to the document" or "As mentioned in the snippet." as solver has no access to the document and is not assumed to remember in verbatim manner.
 
 ### Output JSON Schema
 You must output a single JSON object:
 {
-    "question": "A comprehensive, self-contained scenario-based question including necessary context and code snippets.",
+        "question": "A comprehensive, self-contained scenario-based question including necessary context and code snippets.",
     "answer": "A detailed explanation that clarifies the mechanics and consequences of the library's behavior."
 }
 
 ### Research Task
-Base the task on the content of the provided file path. Use the File System MCP to examine the base class definitions or related utility functions to ensure the 'answer' is technically accurate."""
+Base the task on the content of the provided file path. Use the File System MCP to examine the base class definitions or related utility functions to ensure the 'answer' is technically accurate.
+You have {max_turns} turns to complete the task."""
     agent = AgentWrapper[QAProblem].create(
         name="qa_generator",
         instructions=prompt,
@@ -45,7 +50,7 @@ Topic title: {topic.title}
 Topic description: {topic.description}"""
     ret = await agent.run(
         input=input,
-        max_turns=20,
+        max_turns=max_turns,
     )
     return ret.final_output()
 
@@ -55,7 +60,11 @@ class QAGenerationOutput(BaseModel):
 
 
 async def create_multiple_qas(
-    local_dir: Path, file_path: str, topic: Topic, filesystem_mcp: MCPServerStdio
+    local_dir: Path,
+    file_path: str,
+    topic: Topic,
+    filesystem_mcp: MCPServerStdio,
+    max_turns: int = 20,
 ) -> list[QAProblem]:
     prompt = """\
 You are an expert Python technical interviewer and library documentation specialist.
@@ -63,41 +72,42 @@ Your goal is to create one or more high-quality, self-contained question and ans
 
 ### Core Objectives:
 - **Atomic Scope**: Each Q&A pair must focus on a single specific architectural concept or mechanic. If a document is complex, generate multiple separate Q&A pairs.
-- **Identify, Don't Explain**: Provide enough context to establish the scenario (e.g., identify the library and classes), but do not give away the logic, rules, or definitions. The solver must provide the expertise.
+- **Identify, Don't Explain**: Provide enough context to establish the scenario, but do not give away the logic, rules, or definitions. The solver must provide the expertise.
+- **Test for Recall**: Design questions that require the solver to provide specific syntax, command names, or variable names from memory based on a described goal.
 
 ### Guidelines for "Self-Contained" Questions:
-1. **Contextual Setup**: Provide enough context to establish the scenario (e.g., "A developer is using the AST transformation API to rename columns"). You must identify the specific classes, methods, modules, or concepts involved so the question is self-contained. HOWEVER, you must not explain the logic or rules (e.g., do not explain the difference between BFS and DFS or how a specific property is calculated).
-2. **Conceptual over Verbatim**: Test the "why" and "how" of the library's design patterns rather than asking for specific text found in the documentation.
-3. **No Meta-References**: Do not use phrases like "According to the document" as the solver has no access to the documentation.
-4. **Code-Centric**: Use code snippets to illustrate the scenario where it clarifies the technical problem.
+1. **Contextual Setup**: Provide enough architectural context to establish the scenario (e.g., "A developer is implementing a SQL-to-SQL transpilation pipeline that must handle cross-dialect identifier quoting"; or "A developer is writing a custom optimization pass to identify and remove redundant logical conditions in a SELECT statement"; or "A developer is programmatically building a complex query and needs to ensure that specific metadata is preserved during node replacement"). You must identify the specific modules or concepts involved so the question is self-contained. HOWEVER, you must not explain the logic or rules (e.g., do not explain how the quote character is chosen or how the replacement logic maintains parent pointers).
+2. **Goal-Oriented Scenarios**: Instead of asking "What are the targets?", frame the question as a specific task. Describe the desired outcome (e.g., "The developer wants to run only core logic tests while ensuring a specific dependency is bypassed").
+3. **No Meta-References**: Do not use phrases like "According to the document" as the solver has no access to it.
 
 ### Examples of Desired Granularity and Depth:
 
-**Example 1 (Focus: AST Representation vs. Runtime Logic)**
-- **Question**: "A developer parses a query and inspects the representation: `Select(expressions=[Column(this=Identifier(this=a))])`. Explain the mapping between this representation and the library's internal `Expression` instance. Specifically, what does the `expressions=` label indicate relative to the instance's `args` dict, and why might some optional child keys be missing from the `repr()` output?"
-- **Answer**: "The names (Select, Column) are Expression subclasses. Labels like `expressions=` are keys in the instance's `self.args` dictionary. Missing keys are omitted from `repr()` by default if they are `None` or empty lists to keep the view compact; they can be revealed using a verbose `to_s()` call."
+**Example 1 (Focus: Selective Testing & State)**
+- **Question**: "A developer wants to run the project's unit tests. However, they do not have the Rust development environment installed and need to ensure the test runner specifically skips any tests that require the native extension. What is the exact command and environment variable pair used to achieve this 'Python-only' test run?"
+- **Answer**: "The developer should run `SQLGLOTRS_TOKENIZER=0 make unit`. Setting the environment variable to 0 forces the pure-Python implementation, and the 'unit' target runs the standard library test suite."
 
-**Example 2 (Focus: Tree Integrity during Mutation)**
-- **Question**: "When mutating an AST node (e.g., using `append`, `set`, or `replace`), the library maintains parent/child links automatically. What are the consequences of manually modifying the `args` dictionary directly instead of using these methods, specifically regarding the `.parent` and `.arg_key` attributes of the child nodes?"
-- **Answer**: "Directly modifying `args` bypasses the `_set_parent` helper. This leaves the child's `.parent`, `.arg_key`, and `.index` attributes incorrect or out of date, breaking bi-directional traversal and potentially leaving cached hashes invalid."
+**Example 2 (Focus: Dependency Management)**
+- **Question**: "The project supports an alternative, faster Python package installer via a specific Makefile toggle. How does a contributor invoke the installation target so that it uses this optimized wrapper instead of standard pip?"
+- **Answer**: "The contributor should prefix the command with the `UV=1` environment variable, for example: `UV=1 make install-dev`. This tells the Makefile to alias the PIP command to 'uv pip'."
 
-**Example 3 (Focus: Namespace Conflicts in Attribute Access)**
-- **Question**: "In an interactive environment, a developer notices they can access column data via `df.A`. If a DataFrame has a column named 'count', explain why `df.count` might return a bound method instead of the column data, and what the precedence rules are for attribute-style access."
-- **Answer**: "Built-in class methods and public attributes of the DataFrame object take precedence over column names. Since 'count' is a standard method for calculating non-NA cells, the attribute access resolves to the method. To access the data, the developer must use string indexing: `df['count']`."
+**Example 3 (Focus: Structural Metadata)**
+- **Question**: "When inspecting an AST node's representation, some optional child keys are hidden to save space. Which specific instance method must be called to produce a fully verbose textual output that reveals every argument, including empty keys and object IDs?"
+- **Answer**: "The developer should call the `.to_s(verbose=True)` method. While `repr()` provides a compact view, `to_s` is the internal printer that supports a 'verbose' flag for debugging."
 
 ### Output JSON Schema
 You must output a single JSON object containing a list of tasks:
 {
     "tasks": [
         {
-            "question": "A focused, self-contained scenario-based question.",
-            "answer": "A detailed explanation of the mechanics and consequences."
+            "question": "A focused, self-contained scenario-based question that describes a goal without naming the solution.",
+            "answer": "A detailed explanation providing the specific syntax, targets, or variables required."
         }
     ]
 }
 
 ### Research Task
-Base the tasks on the provided file path. Use the File System MCP to verify internal mechanics (e.g., base class logic or private helpers) so the 'answer' is technically accurate regarding how the library handles its operations."""
+Base the tasks on the provided file path. Use the File System MCP to verify the exact names of targets, variables, or private methods to ensure the 'answer' is technically accurate.
+"""
     agent = AgentWrapper[QAGenerationOutput].create(
         name="qa_generator",
         instructions=prompt,
@@ -113,6 +123,6 @@ Topic title: {topic.title}
 Topic description: {topic.description}"""
     ret = await agent.run(
         input=input,
-        max_turns=20,
+        max_turns=max_turns,
     )
     return ret.final_output().tasks

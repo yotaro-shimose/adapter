@@ -1,8 +1,7 @@
-from adapter.models.problems import ProblemDataset
-from adapter.questioner.questioner import questioner
+from adapter.questioner.questioner import create_qra
+from adapter.models.problems import QRADataset
+from adapter.models.problems import QRA
 from adapter.questioner.finder import list_document_filepaths
-from adapter.models.problems import VerifiableProblem
-from adapter.models.problems import QAProblem
 from itertools import chain
 from pathlib import Path
 
@@ -18,23 +17,10 @@ from adapter.utils.async_util import gather_with_semaphore
 
 async def main():
     load_dotenv()
-    # repo_url = httpx.URL("https://github.com/SWE-agent/SWE-ReX/tree/main/docs")
-    # repo_url = httpx.URL("https://github.com/tobymao/sqlglot")
     cloned_repo_path = Path("./sqlglot")
     repo_name = str(cloned_repo_path).split("/")[-1]
     output_path = Path(f"{repo_name}_problems.json")
     logger.info(f"Starting problem creation for repository: {repo_name}")
-    # await create_and_save_problems(
-    #     repo_url=repo_url,
-    #     document_paths=document_paths,
-    #     save_path=save_path,
-    # )
-
-    # dataset = ProblemDataset.load(save_path)
-    # for i, problem in enumerate(dataset.problems):
-    #     print(f"Problem {i + 1}:")
-    #     print(problem.as_md())
-    #     print("\n" + "=" * 40 + "\n")
     topic_save_path = Path(f"{repo_name}_topics.json")
     logger.debug(f"Topic save path: {topic_save_path}")
 
@@ -74,15 +60,14 @@ async def main():
         file_topics = TopicEntities.load(topic_save_path)
 
     logger.info(f"Generating problems for {len(file_topics.topics)} topics")
-    problems: list[QAProblem | VerifiableProblem] = []
+    problems: list[QRA] = []
     async with filesystem_mcp(
         allowed_directories=[str(cloned_repo_path)], read_only=True
     ) as filesystem:
         for file_topics_batch in chunked(file_topics.topics[:10], 10):
             batch_problems = await gather_with_semaphore(
                 [
-                    questioner(
-                        # create_qa(
+                    create_qra(
                         cloned_repo_path,
                         file_topic.file_path,
                         file_topic.topic,
@@ -97,7 +82,7 @@ async def main():
                 if problem_list:
                     problems.extend(problem_list)
 
-            dataset = ProblemDataset(problems=problems)
+            dataset = QRADataset(problems=problems)
             dataset.save(output_path)
 
     logger.success(f"Saved {len(problems)} problems to {output_path}")

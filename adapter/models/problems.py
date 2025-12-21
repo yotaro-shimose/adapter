@@ -34,3 +34,13 @@ class QAProblem(Savable):
 
 class ProblemDataset(Savable):
     problems: list[VerifiableProblem | QAProblem]
+
+
+class QRA(Savable):
+    question: str
+    answer: str
+    reasoning: str
+
+
+class QRADataset(Savable):
+    problems: list[QRA]

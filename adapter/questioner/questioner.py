@@ -1,12 +1,12 @@
+from adapter.questioner.reasoner import hindsight_reasoning
+from adapter.utils.async_util import gather_with_semaphore
+from adapter.models.problems import QRA
 from adapter.questioner.qa import create_multiple_qas
 from oai_utils.agent import AgentRunFailure
 from adapter.questioner.coding import ProblemVerificationError
-from adapter.questioner.coding import create_coding_task
 from oai_utils.agent import AgentWrapper
 from adapter.models.types import ProblemType
 from pydantic.main import BaseModel
-from adapter.models.problems import VerifiableProblem
-from adapter.models.problems import QAProblem
 from agents.mcp.server import MCPServerStdio
 from adapter.models.topics import Topic
 from pathlib import Path
@@ -92,7 +92,7 @@ Topic description: {topic.description}""",
 
 async def questioner(
     local_dir: Path, file_path: str, topic: Topic, filesystem_mcp: MCPServerStdio
-) -> list[VerifiableProblem] | list[QAProblem] | None:
+) -> list[QRA] | None:
     if not await is_useful_for_users(topic):
         logger.info(f"Skipping topic as it is not useful for users: {topic.title}")
         return None
@@ -103,26 +103,29 @@ async def questioner(
     try:
         if problem_type == "qa":
             logger.info(f"Creating QA problem for topic: {topic.title}")
-            return await create_multiple_qas(
-                local_dir, file_path, topic, filesystem_mcp
+            qas = await create_multiple_qas(local_dir, file_path, topic, filesystem_mcp)
+            reasonings = await gather_with_semaphore(
+                [hindsight_reasoning(qa) for qa in qas], 3
             )
-        elif problem_type == "programming":
-            logger.info(f"Creating coding task for topic: {topic.title}")
             return [
-                await create_coding_task(local_dir, file_path, topic, filesystem_mcp)
+                QRA(question=qa.question, answer=qa.answer, reasoning=reasoning)
+                for qa, reasoning in zip(qas, reasonings)
             ]
+        # elif problem_type == "programming":
+        #     logger.info(f"Creating coding task for topic: {topic.title}")
+        #     return [
+        #         await create_coding_task(local_dir, file_path, topic, filesystem_mcp)
+        #     ]
         else:
             logger.error(
                 f"Unknown problem type '{problem_type}' for topic: {topic.title}"
             )
             return None
     except ProblemVerificationError:
-        logger.warning(f"Failed to create a valid coding task for topic: {topic.title}")
+        logger.warning(f"Failed to create a valid task for topic: {topic.title}")
         return None
     except AgentRunFailure as e:
-        logger.warning(
-            f"Agent failed to create coding task for topic: {topic.title}: {e}"
-        )
+        logger.warning(f"Agent failed to create task for topic: {topic.title}: {e}")
         return None
     except Exception as e:
         logger.error(
