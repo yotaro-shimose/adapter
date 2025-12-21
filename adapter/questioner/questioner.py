@@ -105,7 +105,13 @@ async def questioner(
             logger.info(f"Creating QA problem for topic: {topic.title}")
             qas = await create_multiple_qas(local_dir, file_path, topic, filesystem_mcp)
             reasonings = await gather_with_semaphore(
-                [hindsight_reasoning(qa) for qa in qas], 3
+                [
+                    hindsight_reasoning(
+                        qa, local_dir, file_path, filesystem_mcp=filesystem_mcp
+                    )
+                    for qa in qas
+                ],
+                3,
             )
             return [
                 QRA(question=qa.question, answer=qa.answer, reasoning=reasoning)

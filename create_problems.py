@@ -1,4 +1,4 @@
-from adapter.questioner.questioner import create_qra
+from adapter.questioner.questioner import questioner
 from adapter.models.problems import QRADataset
 from adapter.models.problems import QRA
 from adapter.questioner.finder import list_document_filepaths
@@ -67,7 +67,7 @@ async def main():
         for file_topics_batch in chunked(file_topics.topics[:10], 10):
             batch_problems = await gather_with_semaphore(
                 [
-                    create_qra(
+                    questioner(
                         cloned_repo_path,
                         file_topic.file_path,
                         file_topic.topic,

@@ -21,6 +21,8 @@ async def main():
         status = "✅ [VALID]" if is_valid else "❌ [INVALID]"
         print("-" * 80)
         print(f"Question: {problem.question}")
+        print(f"Reasoning: {problem.reasoning}")
+        print(f"Answer: {problem.answer}")
         print(f"Status: {status}")
         print(f"Feedback: {feedback}")
 
