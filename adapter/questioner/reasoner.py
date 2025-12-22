@@ -1,9 +1,10 @@
 from pydantic import BaseModel
 from adapter.models.problems import QAProblem
-from oai_utils.agent import AgentWrapper
+from oai_utils.agent import AgentWrapper, AgentRunFailure, AgentsSDKModel
 from agents.mcp.server import MCPServerStdio
 from agents.model_settings import ModelSettings
 from pathlib import Path
+from tenacity import AsyncRetrying, stop_after_attempt, retry_if_exception_type
 
 
 class ReasoningOutput(BaseModel):
@@ -15,6 +16,7 @@ async def hindsight_reasoning(
     local_dir: Path,
     file_path: str,
     filesystem_mcp: MCPServerStdio,
+    model: AgentsSDKModel,
     max_turns: int = 20,
 ) -> str:
     prompt = """\
@@ -34,7 +36,7 @@ Your task is to provide a "hindsight reasoning" process for a given question and
     agent = AgentWrapper[ReasoningOutput].create(
         name="hindsight_reasoner",
         instructions=prompt,
-        model="gpt-5-mini",
+        model=model,
         output_type=ReasoningOutput,
         mcp_servers=[filesystem_mcp],
         model_settings=ModelSettings(parallel_tool_calls=True),
@@ -51,3 +53,26 @@ Answer: {qa.answer}"""
         max_turns=max_turns,
     )
     return ret.final_output().reasoning
+
+
+async def hindsight_reasoning_retriable(
+    qa: QAProblem,
+    local_dir: Path,
+    file_path: str,
+    filesystem_mcp: MCPServerStdio,
+    model: AgentsSDKModel,
+    max_turns: int = 20,
+) -> str | None:
+    try:
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(3),
+            retry=retry_if_exception_type(AgentRunFailure),
+            reraise=True,
+        ):
+            with attempt:
+                return await hindsight_reasoning(
+                    qa, local_dir, file_path, filesystem_mcp, model, max_turns
+                )
+    except AgentRunFailure:
+        return None
+    return None

@@ -1,41 +1,46 @@
 from adapter.questioner.questioner import questioner
-from adapter.models.problems import QRADataset
-from adapter.models.problems import QRA
+from adapter.models.problems import QRADataset, QRA
 from adapter.questioner.finder import list_document_filepaths
 from itertools import chain
 from pathlib import Path
+import asyncio
 
 from dotenv.main import load_dotenv
 from loguru import logger
-from more_itertools import chunked
+from tqdm.asyncio import tqdm_asyncio
 from oai_utils.mcp.filesystem import filesystem_mcp
 
 from adapter.find_topic import find_topics
 from adapter.models.topics import TopicEntities, TopicEntity
 from adapter.utils.async_util import gather_with_semaphore
+from adapter.models.config import ProblemCreationConfig
 
 
 async def main():
     load_dotenv()
-    cloned_repo_path = Path("./sqlglot")
-    repo_name = str(cloned_repo_path).split("/")[-1]
-    output_path = Path(f"{repo_name}_problems.json")
-    logger.info(f"Starting problem creation for repository: {repo_name}")
-    topic_save_path = Path(f"{repo_name}_topics.json")
-    logger.debug(f"Topic save path: {topic_save_path}")
+    config = ProblemCreationConfig(
+        repo_path=Path("./sqlglot"),
+        topic_extraction_semaphore=3,
+        question_generation_semaphore=30,
+        max_topics=1000,
+        batch_size=30,
+        output_dir=Path("./data"),
+        model="gpt-5.2",
+    )
 
-    # file_path = "/docs/concepts/models.md"
+    logger.info(f"Starting problem creation for repository: {config.repo_name}")
+    logger.debug(f"Topic save path: {config.topic_save_path}")
 
-    if not topic_save_path.exists():
+    if not config.topic_save_path.exists():
         logger.info("Topic file not found, extracting topics from documents")
-        file_paths = await list_document_filepaths(cloned_repo_path)
+        file_paths = await list_document_filepaths(config.repo_path)
         logger.info(f"Found {len(file_paths.file_paths)} document files")
         topics = await gather_with_semaphore(
             [
-                find_topics(cloned_repo_path, file_path)
+                find_topics(config.repo_path, file_path)
                 for file_path in file_paths.file_paths
             ],
-            3,
+            config.topic_extraction_semaphore,
             progressbar=True,
         )
         file_topics = TopicEntities(
@@ -52,43 +57,62 @@ async def main():
             )
         )
         logger.info(
-            f"Extracted {len(file_topics.topics)} topics, saving to {topic_save_path}"
+            f"Extracted {len(file_topics.topics)} topics, saving to {config.topic_save_path}"
         )
-        file_topics.save(topic_save_path)
+        file_topics.save(config.topic_save_path)
     else:
-        logger.info(f"Loading existing topics from {topic_save_path}")
-        file_topics = TopicEntities.load(topic_save_path)
+        logger.info(f"Loading existing topics from {config.topic_save_path}")
+        file_topics = TopicEntities.load(config.topic_save_path)
 
     logger.info(f"Generating problems for {len(file_topics.topics)} topics")
     problems: list[QRA] = []
+    completed_count = 0
+    save_lock = asyncio.Lock()
+
     async with filesystem_mcp(
-        allowed_directories=[str(cloned_repo_path)], read_only=True
+        allowed_directories=[str(config.repo_path)], read_only=True
     ) as filesystem:
-        for file_topics_batch in chunked(file_topics.topics[:10], 10):
-            batch_problems = await gather_with_semaphore(
-                [
-                    questioner(
-                        cloned_repo_path,
+        semaphore = asyncio.Semaphore(config.question_generation_semaphore)
+
+        async def process_topic(file_topic: TopicEntity):
+            nonlocal completed_count
+            async with semaphore:
+                try:
+                    result = await questioner(
+                        config.repo_path,
                         file_topic.file_path,
                         file_topic.topic,
                         filesystem_mcp=filesystem,
+                        model=config.model,
                     )
-                    for file_topic in file_topics_batch
-                ],
-                10,
-                progressbar=True,
-            )
-            for problem_list in batch_problems:
-                if problem_list:
-                    problems.extend(problem_list)
+                    if result:
+                        async with save_lock:
+                            problems.extend(result)
+                except Exception as e:
+                    logger.error(
+                        f"Error processing topic {file_topic.topic.title}: {e}"
+                    )
+                finally:
+                    async with save_lock:
+                        completed_count += 1
+                        if completed_count % 30 == 0:
+                            logger.info(
+                                f"Progress: {completed_count}/{config.max_topics}. Saving intermediate results..."
+                            )
+                            dataset = QRADataset(problems=problems)
+                            dataset.save(config.output_path)
 
-            dataset = QRADataset(problems=problems)
-            dataset.save(output_path)
+        tasks = [
+            process_topic(file_topic)
+            for file_topic in file_topics.topics[: config.max_topics]
+        ]
+        await tqdm_asyncio.gather(*tasks)
 
-    logger.success(f"Saved {len(problems)} problems to {output_path}")
+    # Final save
+    dataset = QRADataset(problems=problems)
+    dataset.save(config.output_path)
+    logger.success(f"Saved {len(problems)} problems to {config.output_path}")
 
 
 if __name__ == "__main__":
-    import asyncio
-
     asyncio.run(main())

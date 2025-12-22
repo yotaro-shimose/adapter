@@ -1,6 +1,8 @@
 from textwrap import dedent
 
 from adapter.utils.savable import Savable
+from datasets import Dataset
+import polars as pl
 
 
 class VerifiableProblem(Savable):
@@ -44,3 +46,12 @@ class QRA(Savable):
 
 class QRADataset(Savable):
     problems: list[QRA]
+
+    def as_prompt_completion(self) -> Dataset:
+        prompt = []
+        completion = []
+        for sample in self.problems:
+            prompt.append(sample.question)
+            completion.append(f"<think>{sample.reasoning}</think>{sample.answer}")
+        dataframe = pl.DataFrame({"prompt": prompt, "completion": completion})
+        return Dataset.from_polars(dataframe)

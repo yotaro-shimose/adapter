@@ -11,3 +11,7 @@ wheels/
 
 .env
 .vscode
+
+outputs
+data
+checkpoints

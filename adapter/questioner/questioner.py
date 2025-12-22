@@ -1,10 +1,9 @@
-from adapter.questioner.reasoner import hindsight_reasoning
+from adapter.questioner.reasoner import hindsight_reasoning_retriable
 from adapter.utils.async_util import gather_with_semaphore
 from adapter.models.problems import QRA
-from adapter.questioner.qa import create_multiple_qas
-from oai_utils.agent import AgentRunFailure
+from adapter.questioner.qa import create_multiple_qas_retriable
 from adapter.questioner.coding import ProblemVerificationError
-from oai_utils.agent import AgentWrapper
+from oai_utils.agent import AgentWrapper, AgentRunFailure, AgentsSDKModel
 from adapter.models.types import ProblemType
 from pydantic.main import BaseModel
 from agents.mcp.server import MCPServerStdio
@@ -22,7 +21,7 @@ class UsefulnessResult(BaseModel):
     reason: str
 
 
-async def is_useful_for_users(topic: Topic) -> bool:
+async def is_useful_for_users(topic: Topic, model: AgentsSDKModel) -> bool:
     agent = AgentWrapper[UsefulnessResult].create(
         name="topic_usefulness_checker",
         instructions="""\
@@ -46,8 +45,8 @@ A topic IS useful if it describes:
     "is_useful": "boolean. True if the topic is useful for library learners, False otherwise.",
     "reason": "A brief explanation of why the topic is or is not useful."
 }""",
-        model="gpt-5-mini",
         output_type=UsefulnessResult,
+        model=model,
     )
     ret = await agent.run(
         input=f"""\
@@ -62,7 +61,7 @@ Topic description: {topic.description}""",
     return result.is_useful
 
 
-async def dispatch_topic(topic: Topic) -> ProblemType:
+async def dispatch_topic(topic: Topic, model: AgentsSDKModel) -> ProblemType:
     agent = AgentWrapper[DispatchResult].create(
         name="problem_type_dispatcher",
         instructions="""\
@@ -77,8 +76,8 @@ You must choose between two types of assessments: "programming" or "qa".
 ### Guidelines
 1. **Programming**: Choose this type if the topic's understanding can be effectively assessed through coding tasks (e.g., implementing functions, algorithms, or using specific library features).
 2. **QA**: Choose this type for conceptual questions, definitions, or explanations.""",
-        model="gpt-5-mini",
         output_type=DispatchResult,
+        model=model,
     )
     ret = await agent.run(
         input=f"""\
@@ -91,9 +90,13 @@ Topic description: {topic.description}""",
 
 
 async def questioner(
-    local_dir: Path, file_path: str, topic: Topic, filesystem_mcp: MCPServerStdio
+    local_dir: Path,
+    file_path: str,
+    topic: Topic,
+    filesystem_mcp: MCPServerStdio,
+    model: AgentsSDKModel,
 ) -> list[QRA] | None:
-    if not await is_useful_for_users(topic):
+    if not await is_useful_for_users(topic, model):
         logger.info(f"Skipping topic as it is not useful for users: {topic.title}")
         return None
 
@@ -103,20 +106,29 @@ async def questioner(
     try:
         if problem_type == "qa":
             logger.info(f"Creating QA problem for topic: {topic.title}")
-            qas = await create_multiple_qas(local_dir, file_path, topic, filesystem_mcp)
+            qas = await create_multiple_qas_retriable(
+                local_dir, file_path, topic, filesystem_mcp, model
+            )
             reasonings = await gather_with_semaphore(
                 [
-                    hindsight_reasoning(
-                        qa, local_dir, file_path, filesystem_mcp=filesystem_mcp
+                    hindsight_reasoning_retriable(
+                        qa,
+                        local_dir,
+                        file_path,
+                        filesystem_mcp=filesystem_mcp,
+                        model=model,
                     )
                     for qa in qas
                 ],
                 3,
             )
-            return [
-                QRA(question=qa.question, answer=qa.answer, reasoning=reasoning)
-                for qa, reasoning in zip(qas, reasonings)
-            ]
+            results = []
+            for qa, reasoning in zip(qas, reasonings):
+                if reasoning is not None:
+                    results.append(
+                        QRA(question=qa.question, answer=qa.answer, reasoning=reasoning)
+                    )
+            return results
         # elif problem_type == "programming":
         #     logger.info(f"Creating coding task for topic: {topic.title}")
         #     return [

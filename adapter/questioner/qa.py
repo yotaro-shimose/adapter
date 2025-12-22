@@ -1,5 +1,6 @@
 from pydantic import BaseModel
-from oai_utils.agent import AgentWrapper
+from oai_utils.agent import AgentWrapper, AgentRunFailure, AgentsSDKModel
+from tenacity import AsyncRetrying, stop_after_attempt, retry_if_exception_type
 from adapter.models.problems import QAProblem
 from agents.mcp.server import MCPServerStdio
 from adapter.models.topics import Topic
@@ -12,6 +13,7 @@ async def create_qa(
     file_path: str,
     topic: Topic,
     filesystem_mcp: MCPServerStdio,
+    model: AgentsSDKModel,
     max_turns: int = 20,
 ) -> QAProblem | None:
     prompt = f"""\
@@ -38,7 +40,7 @@ You have {max_turns} turns to complete the task."""
     agent = AgentWrapper[QAProblem].create(
         name="qa_generator",
         instructions=prompt,
-        model="gpt-5-mini",
+        model=model,
         output_type=QAProblem,
         mcp_servers=[filesystem_mcp],
         model_settings=ModelSettings(parallel_tool_calls=True),
@@ -64,6 +66,7 @@ async def create_multiple_qas(
     file_path: str,
     topic: Topic,
     filesystem_mcp: MCPServerStdio,
+    model: AgentsSDKModel,
     max_turns: int = 20,
 ) -> list[QAProblem]:
     prompt = """\
@@ -111,7 +114,7 @@ Base the tasks on the provided file path. Use the File System MCP to verify the 
     agent = AgentWrapper[QAGenerationOutput].create(
         name="qa_generator",
         instructions=prompt,
-        model="gpt-5-mini",
+        model=model,
         output_type=QAGenerationOutput,
         mcp_servers=[filesystem_mcp],
         model_settings=ModelSettings(parallel_tool_calls=True),
@@ -126,3 +129,26 @@ Topic description: {topic.description}"""
         max_turns=max_turns,
     )
     return ret.final_output().tasks
+
+
+async def create_multiple_qas_retriable(
+    local_dir: Path,
+    file_path: str,
+    topic: Topic,
+    filesystem_mcp: MCPServerStdio,
+    model: AgentsSDKModel,
+    max_turns: int = 20,
+) -> list[QAProblem]:
+    try:
+        async for attempt in AsyncRetrying(
+            stop=stop_after_attempt(3),
+            retry=retry_if_exception_type(AgentRunFailure),
+            reraise=True,
+        ):
+            with attempt:
+                return await create_multiple_qas(
+                    local_dir, file_path, topic, filesystem_mcp, model, max_turns
+                )
+    except AgentRunFailure:
+        return []
+    return []  # Should not reach here
