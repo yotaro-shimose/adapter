@@ -1,6 +1,8 @@
+from typing import Self
+from adapter.utils.savable import Savable
 from adapter.models.problems import QRADataset
 from pathlib import Path
-
+import datetime
 import torch
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 from transformers import (
@@ -11,26 +13,55 @@ from transformers import (
 from trl import SFTTrainer
 from trl.trainer.sft_config import SFTConfig
 
+
+class AdapterSFTConfig(Savable):
+    dataset_path: Path
+    base_model_name: str
+    output_dir: Path
+    model_save_dir: Path
+    max_seq_length: int
+    learning_rate: float
+    num_train_epochs: int
+    per_device_train_batch_size: int
+    gradient_accumulation_steps: int
+    warmup_steps: int
+    weight_decay: float
+
+    @classmethod
+    def default(cls) -> Self:
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        return cls(
+            dataset_path=Path("data/sqlglot/problems.json"),
+            base_model_name="Qwen/Qwen3-4B",
+            output_dir=Path(f"./outputs/{today}"),
+            model_save_dir=Path(f"./checkpoints/qwen3-4b-sqlglot-finetuned-{today}"),
+            max_seq_length=4096 * 5,
+            learning_rate=4e-4,
+            num_train_epochs=5,
+            per_device_train_batch_size=4,
+            gradient_accumulation_steps=2,
+            warmup_steps=10,
+            weight_decay=0.01,
+        )
+
+
+config = AdapterSFTConfig.default()
+
 # Load reflection results
-dataset_path = Path("sqlglot_problems.json")
 # Wait for file to exist if running concurrently (or just assume it will exist)
-if not dataset_path.exists():
+if not config.dataset_path.exists():
     raise FileNotFoundError(
-        f"{dataset_path} not found. Please run create_problems.py first."
+        f"{config.dataset_path} not found. Please run create_problems.py first."
     )
 
-qra_dataset = QRADataset.load(dataset_path)
+qra_dataset = QRADataset.load(config.dataset_path)
 print(f"Loaded {len(qra_dataset.problems)} training reflection results")
 
 eval_path = Path("data/reflection_eval.json")
 
-# Model configuration
-max_seq_length = 4096 * 5
-model_name = "Qwen/Qwen3-4B"
-
 # Load tokenizer
 tokenizer = AutoTokenizer.from_pretrained(
-    model_name,
+    config.base_model_name,
     trust_remote_code=True,
 )
 
@@ -45,7 +76,7 @@ if use_quantization:
         bnb_4bit_use_double_quant=True,
     )
     model = AutoModelForCausalLM.from_pretrained(
-        model_name,
+        config.base_model_name,
         quantization_config=bnb_config,
         trust_remote_code=True,
         torch_dtype=torch.bfloat16,
@@ -54,7 +85,7 @@ if use_quantization:
     model = prepare_model_for_kbit_training(model)
 else:
     model = AutoModelForCausalLM.from_pretrained(
-        model_name,
+        config.base_model_name,
         trust_remote_code=True,
         torch_dtype=torch.bfloat16,
         attn_implementation="flash_attention_2" if torch.cuda.is_available() else None,
@@ -85,27 +116,26 @@ model.print_trainable_parameters()
 # Enable gradient checkpointing for memory efficiency
 model.gradient_checkpointing_enable()  # type: ignore
 
-qra_dataset = QRADataset.load(dataset_path)
+qra_dataset = QRADataset.load(config.dataset_path)
 # Convert reflections to dataset
-dataset = qra_dataset.as_prompt_completion()
+dataset = qra_dataset.as_conversational()
 print(f"Prepared dataset with {len(dataset)} examples")
 
 # Determine if bf16 is supported
 use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
 
-# Training arguments - optimized for 80GB GPU memory
 training_args = SFTConfig(
-    output_dir="./outputs",
+    output_dir=str(config.output_dir),
     completion_only_loss=True,
-    per_device_train_batch_size=4,
-    gradient_accumulation_steps=2,  # Reduced from 4 to 2 (still same effective batch size: 8*2*2=32)
-    warmup_steps=10,  # Slightly increased for more stable training
-    num_train_epochs=2,  # Train for 2 epochs
-    learning_rate=4e-4,
+    per_device_train_batch_size=config.per_device_train_batch_size,
+    gradient_accumulation_steps=config.gradient_accumulation_steps,
+    warmup_steps=config.warmup_steps,
+    num_train_epochs=config.num_train_epochs,
+    learning_rate=config.learning_rate,
     logging_steps=1,
     optim="adamw_torch_fused",  # Fused optimizer for better performance
-    weight_decay=0.01,
-    max_length=max_seq_length,
+    weight_decay=config.weight_decay,
+    max_length=config.max_seq_length,
     lr_scheduler_type="cosine",  # Cosine scheduler often works better than linear
     seed=3407,
     save_strategy="epoch",
@@ -137,6 +167,7 @@ print("\nStarting training...")
 trainer.train()
 
 # Save the fine-tuned model
-model.save_pretrained("./qwen3-4b-sql-finetuned")
-tokenizer.save_pretrained("./qwen3-4b-sql-finetuned")
-print("\nModel saved to ./qwen3-4b-sql-finetuned")
+config.model_save_dir.mkdir(parents=True, exist_ok=True)
+model.save_pretrained(str(config.model_save_dir))
+tokenizer.save_pretrained(str(config.model_save_dir))
+print(f"\nModel saved to {config.model_save_dir}")

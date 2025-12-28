@@ -25,7 +25,7 @@ async def main():
         max_topics=1000,
         batch_size=30,
         output_dir=Path("./data"),
-        model="gpt-5.2",
+        model="gpt-4o",
     )
 
     logger.info(f"Starting problem creation for repository: {config.repo_name}")

@@ -1,5 +1,6 @@
+from adapter.solver.constant import SOLVER_PROMPT
 from textwrap import dedent
-
+from typing import Self
 from adapter.utils.savable import Savable
 from datasets import Dataset
 import polars as pl
@@ -52,6 +53,36 @@ class QRADataset(Savable):
         completion = []
         for sample in self.problems:
             prompt.append(sample.question)
-            completion.append(f"<think>{sample.reasoning}</think>{sample.answer}")
+            completion.append(
+                f"<think>\n{sample.reasoning}\n</think>\n\n{sample.answer}"
+            )
         dataframe = pl.DataFrame({"prompt": prompt, "completion": completion})
         return Dataset.from_polars(dataframe)
+
+    def as_conversational(self, system_prompt: str = SOLVER_PROMPT) -> Dataset:
+        items = [
+            {
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": system_prompt,
+                    },
+                    {
+                        "role": "user",
+                        "content": sample.question,
+                    },
+                    {
+                        "role": "assistant",
+                        "content": f"<think>{sample.reasoning}</think>{sample.answer}",
+                    },
+                ]
+            }
+            for sample in self.problems
+        ]
+        return Dataset.from_list(items)
+
+    def sort(self) -> Self:
+        return self.__class__(problems=sorted(self.problems, key=lambda x: x.question))
+
+    def head(self, n: int) -> Self:
+        return self.__class__(problems=self.problems[:n])

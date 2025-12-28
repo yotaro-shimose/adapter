@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from oai_utils.agent import AgentWrapper
+from oai_utils.agent import AgentWrapper, AgentsSDKModel
 from adapter.models.problems import QAProblem
 
 
@@ -8,7 +8,9 @@ class QAEvalResult(BaseModel):
     is_correct: bool
 
 
-async def evaluate_qa(problem: QAProblem, answer: str) -> QAEvalResult:
+async def evaluate_qa(
+    problem: QAProblem, answer: str, model: AgentsSDKModel = "gpt-5-mini"
+) -> QAEvalResult:
     agent = AgentWrapper[QAEvalResult].create(
         name="qa_evaluator",
         instructions="""\
@@ -27,7 +29,7 @@ You MUST respond with a valid JSON object that conforms to the following Pydanti
     "reason": "Explanation of why the answer is or is not correct."
     "is_correct": "boolean. True if the answer is semantically same with the ground truth, False otherwise.",
 }""",
-        model="gpt-5-mini",
+        model=model,
         output_type=QAEvalResult,
     )
 

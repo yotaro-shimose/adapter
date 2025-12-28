@@ -1,4 +1,4 @@
-from adapter.questioner.verify import verify_problem
+from adapter.verifier.verify import verify_problem
 from pathlib import Path
 
 from swerex.deployment.docker import DockerDeployment

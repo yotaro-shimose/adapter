@@ -1,12 +1,12 @@
+from swerex.deployment.abstract import AbstractDeployment
+from oai_utils.agent import AgentsSDKModel
 from adapter.models.problems import VerifiableProblem
 from dataclasses import dataclass
 from textwrap import dedent
 from typing import Self
 
 from agents.agent import StopAtTools
-from oai_wrapper.agent import AgentWrapper
-from swerex.deployment.abstract import AbstractDeployment
-
+from oai_utils.agent import AgentWrapper
 from adapter.env import (
     ProgrammingEnvironment,
     read_file,
@@ -14,6 +14,7 @@ from adapter.env import (
     submit,
     write_file,
 )
+from swerex.deployment.abstract import AbstractDeployment
 
 
 @dataclass
@@ -21,7 +22,7 @@ class ProblemSolver:
     agent: AgentWrapper[str]
 
     @classmethod
-    def create(cls) -> Self:
+    def create(cls, model: AgentsSDKModel) -> Self:
         agent = AgentWrapper[str].create(
             name="programming_environment_agent",
             instructions=dedent("""\
@@ -33,7 +34,7 @@ class ProblemSolver:
         3. run_command(bash_command: str) -> str: Runs a command in the environment and returns its output.
         4. submit() -> str: Finalizes the programming environment session. Should be called when you are done.
         """),
-            model="gpt-5-mini",
+            model=model,
             tool_use_behavior=StopAtTools(stop_at_tool_names=["submit"]),
             tools=[
                 read_file,
@@ -49,7 +50,7 @@ class ProblemSolver:
     ) -> ProgrammingEnvironment[T]:
         await self.agent.run(
             input=f"""\
-            Here is the problem statement: {problem_statement.as_md()}
+            Answer user question about : {problem_statement.as_md()}
         """,
             context=env,
         )
