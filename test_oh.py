@@ -21,6 +21,22 @@ from openhands.tools.terminal import TerminalTool
 from openhands.workspace import DockerWorkspace
 
 
+class Config(BaseModel):
+    model_name: str
+    image_name: str
+    project_dir: Path
+    library_dir: Path
+
+    @classmethod
+    def default(cls) -> "Config":
+        return cls(
+            model_name="gemini/gemini-3-pro-preview",
+            image_name="ohserver-rust",
+            project_dir=Path("../rust-benchmarks").absolute(),
+            library_dir=Path("repositories/inturn").absolute(),
+        )
+
+
 class TemporalCodingRepositoryError(Exception):
     """Custom exception for TemporalCodingRepository errors."""
 
@@ -43,10 +59,6 @@ class GitRepository(BaseModel):
             )
         # Check if it's a valid git repo
         self.run_git(["rev-parse", "--is-inside-work-tree"])
-
-    @classmethod
-    def create(cls, name: str, local_dir: Path) -> Self:
-        return cls(name=name, local_dir=local_dir)
 
     def run_git(self, args: list[str], cwd: Path | None = None) -> str:
         command = ["git"] + args
@@ -113,14 +125,18 @@ class TemporalCodingRepository(BaseModel):
     library: GitRepository
     cloned_repo: GitRepository | None = None
 
-    @classmethod
-    def create(
-        cls, project: GitRepository, library: GitRepository, branch_name: str
-    ) -> Self:
-        return cls(branch_name=branch_name, library=library, project=project)
+    def __enter__(self) -> Self:
+        return self.setup()
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        self.cleanup()
 
     @property
-    def _repo(self) -> GitRepository:
+    def local_dir(self) -> Path:
+        return self._git.local_dir
+
+    @property
+    def _git(self) -> GitRepository:
         if self.cloned_repo is None:
             raise TemporalCodingRepositoryError(
                 "cloned_repo is not set. Did you call setup()?"
@@ -166,11 +182,11 @@ class TemporalCodingRepository(BaseModel):
 
     def _create_branch(self) -> None:
         """2. We create a new git branch in the cloned repository."""
-        self._repo.checkout(self.branch_name, create=True)
+        self._git.checkout(self.branch_name, create=True)
 
     def _setup_library(self) -> None:
         """3. We clone reference library to PROJECT_ROOT/repositories/{library_name}"""
-        repo_dir = self._repo.local_dir / "repositories" / self.library.name
+        repo_dir = self.local_dir / "repositories" / self.library.name
         repo_dir.parent.mkdir(parents=True, exist_ok=True)
         try:
             subprocess.run(
@@ -188,12 +204,12 @@ class TemporalCodingRepository(BaseModel):
         """Commit changes, push to original project, and return commit hash."""
         logger.info(f"Pushing coding exam commit: {message} ({self.branch_name})")
         # 1. Check for changes
-        self._repo.add()
-        status = self._repo.run_git(["status", "--porcelain"])
+        self._git.add()
+        status = self._git.run_git(["status", "--porcelain"])
         if not status:
             logger.warning("No changes detected in the repository")
             # If no changes, still return the current commit hash
-            return self._repo.rev_parse()
+            return self._git.rev_parse()
 
         # 2. Verify with cargo test if requested
         if run_tests:
@@ -201,7 +217,7 @@ class TemporalCodingRepository(BaseModel):
             try:
                 subprocess.run(
                     ["cargo", "test"],
-                    cwd=self._repo.local_dir,
+                    cwd=self.local_dir,
                     check=True,
                     capture_output=True,
                     text=True,
@@ -213,14 +229,14 @@ class TemporalCodingRepository(BaseModel):
 
         # 3. Commit changes
         logger.debug(f"Committing changes: {message}")
-        self._repo.commit(message)
+        self._git.commit(message)
 
         # 4. Push branch to origin
         logger.debug(f"Pushing branch {self.branch_name} to origin")
-        self._repo.push("origin", self.branch_name)
+        self._git.push("origin", self.branch_name)
 
         # 5. Get the latest commit hash
-        commit_hash = self._repo.rev_parse()
+        commit_hash = self._git.rev_parse()
         logger.success(f"Commit pushed: {commit_hash}")
         return commit_hash
 
@@ -249,24 +265,20 @@ def detect_platform() -> str:
 def generate_exam(
     project: GitRepository,
     library: GitRepository,
-    image_name: str,
     agent: Agent,
+    image_name: str,
 ) -> CodingExam:
     """Orchestrate the exam creation process using an AI agent."""
     logger.info(
         f"Starting exam generation for project: {project.name}, library: {library.name}"
     )
-    base_id = str(uuid.uuid4())
-    repo = TemporalCodingRepository.create(
-        project, library, branch_name=f"repo-{base_id}"
-    )
-    repo.setup()
-
-    try:
+    with TemporalCodingRepository(
+        branch_name=gen_id("repo"), project=project, library=library
+    ) as repo:
         with DockerWorkspace(
             server_image=image_name,
             platform=detect_platform(),
-            mount_dir=str(repo._repo.local_dir.absolute()),
+            mount_dir=str(repo.local_dir.absolute()),
             forward_env=[
                 "GOOGLE_API_KEY",
                 "GOOGLE_CLOUD_PROJECT",
@@ -323,11 +335,11 @@ Only leave empty function signatures if they are strictly necessary for the test
         )
 
         # Read the generated question
-        readme_path = repo._repo.local_dir / "README.md"
+        readme_path = repo.local_dir / "README.md"
         question = readme_path.read_text() if readme_path.exists() else ""
 
         return CodingExam(
-            id=f"exam-{base_id}",
+            id=gen_id("exam"),
             image_name=image_name,
             project=project,
             library=library,
@@ -335,8 +347,6 @@ Only leave empty function signatures if they are strictly necessary for the test
             problem_commit=problem_commit_hash,
             question=question,
         )
-    finally:
-        repo.cleanup()
 
 
 def solve_exam(
@@ -351,22 +361,19 @@ def solve_exam(
 
     # Set up a temporal repository at the problem_commit
     # We use the library info stored in the exam
-    repo = TemporalCodingRepository.create(
-        exam.project,
-        exam.library,
-        branch_name=f"solve-{exam.id}-{'with-lib' if with_library else 'no-lib'}",
-    )
-    repo.setup(setup_library=with_library)
+    with TemporalCodingRepository(
+        branch_name=gen_id(f"solve-{'with-lib' if with_library else 'no-lib'}"),
+        project=exam.project,
+        library=exam.library,
+    ) as repo:
+        # Checkout the problem commit
+        logger.info(f"Checking out problem commit: {exam.problem_commit}")
+        repo._git.checkout(exam.problem_commit)
 
-    # Checkout the problem commit
-    logger.info(f"Checking out problem commit: {exam.problem_commit}")
-    repo._repo.checkout(exam.problem_commit)
-
-    try:
         with DockerWorkspace(
             server_image=exam.image_name,
             platform=detect_platform(),
-            mount_dir=str(repo._repo.local_dir.absolute()),
+            mount_dir=str(repo.local_dir.absolute()),
             forward_env=[
                 "GOOGLE_API_KEY",
                 "GOOGLE_CLOUD_PROJECT",
@@ -404,7 +411,7 @@ You should:
         try:
             subprocess.run(
                 ["cargo", "test"],
-                cwd=repo._repo.local_dir,
+                cwd=repo.local_dir,
                 check=True,
                 capture_output=True,
                 text=True,
@@ -414,18 +421,15 @@ You should:
         except subprocess.CalledProcessError as e:
             logger.error(f"Final verification failed: {e.stderr or e.stdout}")
             return False
-    finally:
-        repo.cleanup()
 
 
 if __name__ == "__main__":
     load_dotenv()
-    model_name = "gemini/gemini-3-pro-preview"
-    # model_name = "gemini/gemini-3-flash-preview"
+    config = Config.default()
     out_path = Path("exam.json")
 
     llm = LLM(
-        model=model_name,
+        model=config.model_name,
         api_key=os.getenv("GOOGLE_API_KEY"),
     )
     condenser = LLMSummarizingCondenser(
@@ -444,20 +448,18 @@ if __name__ == "__main__":
         condenser=condenser,
     )
 
-    example_project = GitRepository.create(
+    example_project = GitRepository(
         name="rust-benchmarks",
-        local_dir=Path("../rust-benchmarks").absolute(),
+        local_dir=config.project_dir,
     )
-    example_library = GitRepository.create(
-        name="inturn", local_dir=Path("repositories/inturn").absolute()
-    )
+    example_library = GitRepository(name="inturn", local_dir=config.library_dir)
 
     if not out_path.exists():
         exam = generate_exam(
             project=example_project,
             library=example_library,
-            image_name="ohserver-rust",
             agent=agent_instance,
+            image_name=config.image_name,
         )
         exam.save(out_path)
         logger.info(f"Generated Exam ID: {exam.id}")
