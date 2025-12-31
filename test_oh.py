@@ -1,3 +1,7 @@
+from adapter.utils.savable import Savable
+from openhands.sdk.context.condenser.llm_summarizing_condenser import (
+    LLMSummarizingCondenser,
+)
 import uuid
 from typing import Self
 from pathlib import Path
@@ -65,8 +69,10 @@ class GitRepository(BaseModel):
     def checkout(self, branch: str, create: bool = False) -> None:
         args = ["checkout", "-b", branch] if create else ["checkout", branch]
         self.run_git(args)
+        self.chmod_777()
 
     def add(self, path: str = ".") -> None:
+        self.chmod_777()
         self.run_git(["add", path])
 
     def commit(self, message: str) -> None:
@@ -82,12 +88,22 @@ class GitRepository(BaseModel):
     def exists(self) -> bool:
         return self.local_dir.exists()
 
+    def chmod_777(self) -> None:
+        """Apply chmod -R 777 to the repository directory."""
+        logger.debug(f"Applying chmod -R 777 to {self.local_dir}")
+        try:
+            subprocess.run(["chmod", "-R", "777", str(self.local_dir)], check=True)
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Failed to apply chmod -R 777: {e.stderr or e.stdout}")
 
-class CodingExam(BaseModel):
+
+class CodingExam(Savable):
     id: str
     image_name: str
     project: GitRepository
-    commit: str
+    library: GitRepository
+    solution_commit: str
+    problem_commit: str
     question: str
 
 
@@ -111,10 +127,10 @@ class TemporalCodingRepository(BaseModel):
             )
         return self.cloned_repo
 
-    def setup(self) -> Self:
+    def setup(self, setup_library: bool = True) -> Self:
         """Create a new coding environment for AI agent."""
         logger.info(
-            f"Setting up temporal repository {self.branch_name} for project {self.project.name}"
+            f"Setting up temporal repository {self.branch_name} for project {self.project.name} (setup_library={setup_library})"
         )
         temp_dir = Path(tempfile.mkdtemp())
 
@@ -136,18 +152,14 @@ class TemporalCodingRepository(BaseModel):
         self.cloned_repo = GitRepository(
             name=f"{self.project.name}-cloned", local_dir=temp_dir
         )
+        logger.info(f"Created temporal repository at: {self.cloned_repo.local_dir}")
 
         self._create_branch()
-        self._setup_library()
+        if setup_library:
+            self._setup_library()
 
         # Fix permissions for Docker mount (OpenHands user UID 10001)
-        logger.debug(f"Setting permissions on {temp_dir}")
-        try:
-            subprocess.run(["chmod", "-R", "777", str(temp_dir)], check=True)
-        except subprocess.CalledProcessError as e:
-            msg = f"Failed to set permissions on temp dir: {e.stderr or e.stdout}"
-            logger.error(msg)
-            raise TemporalCodingRepositoryError(msg) from e
+        self.cloned_repo.chmod_777()
 
         logger.success(f"Temporal repository {self.branch_name} setup complete")
         return self
@@ -172,36 +184,36 @@ class TemporalCodingRepository(BaseModel):
                 f"Library clone failed: {e.stderr or e.stdout}"
             ) from e
 
-    def push_exam(self) -> str:
+    def push_exam(self, message: str, run_tests: bool = True) -> str:
         """Commit changes, push to original project, and return commit hash."""
-        logger.info(f"Finalizing and pushing coding exam {self.branch_name}")
+        logger.info(f"Pushing coding exam commit: {message} ({self.branch_name})")
         # 1. Check for changes
         self._repo.add()
         status = self._repo.run_git(["status", "--porcelain"])
         if not status:
             logger.warning("No changes detected in the repository")
-            raise TemporalCodingRepositoryError(
-                "No changes detected. An exam must contain changes."
-            )
+            # If no changes, still return the current commit hash
+            return self._repo.rev_parse()
 
-        # 2. Verify with cargo test
-        logger.debug("Running cargo test to verify solution")
-        try:
-            subprocess.run(
-                ["cargo", "test"],
-                cwd=self._repo.local_dir,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        except subprocess.CalledProcessError as e:
-            msg = f"Cargo test failed: {e.stderr or e.stdout}"
-            logger.error(msg)
-            raise TemporalCodingRepositoryError(msg) from e
+        # 2. Verify with cargo test if requested
+        if run_tests:
+            logger.debug("Running cargo test to verify solution")
+            try:
+                subprocess.run(
+                    ["cargo", "test"],
+                    cwd=self._repo.local_dir,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            except subprocess.CalledProcessError as e:
+                msg = f"Cargo test failed: {e.stderr or e.stdout}"
+                logger.error(msg)
+                raise TemporalCodingRepositoryError(msg) from e
 
         # 3. Commit changes
-        logger.debug(f"Committing changes for {self.branch_name}")
-        self._repo.commit(f"feat: coding exam {self.branch_name}")
+        logger.debug(f"Committing changes: {message}")
+        self._repo.commit(message)
 
         # 4. Push branch to origin
         logger.debug(f"Pushing branch {self.branch_name} to origin")
@@ -209,7 +221,7 @@ class TemporalCodingRepository(BaseModel):
 
         # 5. Get the latest commit hash
         commit_hash = self._repo.rev_parse()
-        logger.success(f"Coding exam pushed. Commit: {commit_hash}")
+        logger.success(f"Commit pushed: {commit_hash}")
         return commit_hash
 
     def cleanup(self) -> None:
@@ -232,9 +244,6 @@ def detect_platform() -> str:
     if "arm" in machine or "aarch64" in machine:
         return "linux/arm64"
     return "linux/amd64"
-
-
-load_dotenv()
 
 
 def generate_exam(
@@ -264,8 +273,8 @@ def generate_exam(
                 "GOOGLE_CLOUD_LOCATION",
             ],
         ) as workspace:
+            # Phase 1: Ask agent to create question, solution, and test
             conversation = Conversation(agent=agent, workspace=workspace)
-
             prompt = f"""\
 <task>
 You are a rust coding exam generator for library `{library.name}`.
@@ -279,18 +288,39 @@ Then
 </task>
 
 <Guidelines>
+- When installing the dependencies, do not use path dependency. You should install it via cargo command. The library repository is just for your reference.
+- How to install the library is not part of the exam.
 - Do not refer to the documents/source code of `{library.name}` repository in your question.
     - The `{library.name}` repository is not visible to solver. Solver is expected to remember the usage of the library.
     - For example testing solver's understanding about specific functions is good, but asking solver to read the source code is not good.
-- The problems should test test the practical usage of multiple features combined, not just a single feature.
+- The problems should test the practical usage of multiple features combined, not just a single feature.
 - Tests should be located in tests/ directory which will be hidden from solver.
 </Guidelines>
 """
             conversation.send_message(prompt)
             conversation.run()
 
-        # Commit and push changes
-        commit_hash = repo.push_exam()
+            # Commit and push solution
+            solution_commit_hash = repo.push_exam(
+                message=f"feat: coding exam solution {repo.branch_name}"
+            )
+
+            # Phase 2: Ask agent to clean the solution
+            clean_prompt = """\
+<task>
+Now, please clean the solution from lib.rs. 
+The goal is to leave the lib.rs in a state where the solver needs to implement the solution, but the tests you wrote in tests/ directory still exist and can be used to verify the solver's work.
+You should remove the implementation logic and also remove all imports. The solver is expected to know which modules and types they need to import.
+Only leave empty function signatures if they are strictly necessary for the tests to even start compiling, but if possible, let the solver define them as well.
+</task>
+"""
+            conversation.send_message(clean_prompt)
+            conversation.run()
+
+        # Commit and push problem (without running tests, as it's now "broken" by design)
+        problem_commit_hash = repo.push_exam(
+            message=f"feat: coding exam problem {repo.branch_name}", run_tests=False
+        )
 
         # Read the generated question
         readme_path = repo._repo.local_dir / "README.md"
@@ -300,21 +330,108 @@ Then
             id=f"exam-{base_id}",
             image_name=image_name,
             project=project,
-            commit=commit_hash,
+            library=library,
+            solution_commit=solution_commit_hash,
+            problem_commit=problem_commit_hash,
             question=question,
         )
     finally:
         repo.cleanup()
 
 
+def solve_exam(
+    exam: CodingExam,
+    agent: Agent,
+    with_library: bool = True,
+) -> bool:
+    """Orchestrate the exam solving process using an AI agent."""
+    logger.info(
+        f"Starting exam solving (with_library={with_library}) for exam ID: {exam.id}"
+    )
+
+    # Set up a temporal repository at the problem_commit
+    # We use the library info stored in the exam
+    repo = TemporalCodingRepository.create(
+        exam.project,
+        exam.library,
+        branch_name=f"solve-{exam.id}-{'with-lib' if with_library else 'no-lib'}",
+    )
+    repo.setup(setup_library=with_library)
+
+    # Checkout the problem commit
+    logger.info(f"Checking out problem commit: {exam.problem_commit}")
+    repo._repo.checkout(exam.problem_commit)
+
+    try:
+        with DockerWorkspace(
+            server_image=exam.image_name,
+            platform=detect_platform(),
+            mount_dir=str(repo._repo.local_dir.absolute()),
+            forward_env=[
+                "GOOGLE_API_KEY",
+                "GOOGLE_CLOUD_PROJECT",
+                "GOOGLE_CLOUD_LOCATION",
+            ],
+        ) as workspace:
+            conversation = Conversation(agent=agent, workspace=workspace)
+
+            lib_info = (
+                f"The library source code is already available for your reference in `repositories/{exam.library.name}/`."
+                if with_library
+                else f"The library source code is NOT available for your reference. You must solve this using your internal knowledge of `{exam.library.name}`."
+            )
+
+            prompt = f"""\
+<task>
+You are a rust developer tasked with solving a coding exam.
+Here is the question:
+{exam.question}
+
+The project is already set up for you. 
+{lib_info}
+
+You should:
+1. Implement the solution in `src/lib.rs`.
+2. Run the tests in `tests/` to verify your solution (you might need to install `{exam.library.name}` dependency if you need it, but the library repository itself is hidden from solver if mentioned above).
+3. Once tests pass, you are done.
+</task>
+"""
+            conversation.send_message(prompt)
+            conversation.run()
+
+        # Final verification with cargo test
+        logger.info("Running final verification with cargo test")
+        try:
+            subprocess.run(
+                ["cargo", "test"],
+                cwd=repo._repo.local_dir,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            logger.success(f"Exam {exam.id} solved successfully!")
+            return True
+        except subprocess.CalledProcessError as e:
+            logger.error(f"Final verification failed: {e.stderr or e.stdout}")
+            return False
+    finally:
+        repo.cleanup()
+
+
 if __name__ == "__main__":
     load_dotenv()
-    # Use gemini/ prefix for API key-based authentication
-    model_name = "gemini/gemini-3-flash-preview"
+    model_name = "gemini/gemini-3-pro-preview"
+    # model_name = "gemini/gemini-3-flash-preview"
+    out_path = Path("exam.json")
 
     llm = LLM(
         model=model_name,
         api_key=os.getenv("GOOGLE_API_KEY"),
+    )
+    condenser = LLMSummarizingCondenser(
+        llm=llm.model_copy(update={"usage_id": "condenser"}),
+        max_tokens=150_000,
+        keep_first=3,
     )
 
     agent_instance = Agent(
@@ -324,9 +441,9 @@ if __name__ == "__main__":
             Tool(name=FileEditorTool.name),
             Tool(name=TaskTrackerTool.name),
         ],
+        condenser=condenser,
     )
 
-    # Example usage
     example_project = GitRepository.create(
         name="rust-benchmarks",
         local_dir=Path("../rust-benchmarks").absolute(),
@@ -335,14 +452,45 @@ if __name__ == "__main__":
         name="inturn", local_dir=Path("repositories/inturn").absolute()
     )
 
-    exam = generate_exam(
-        project=example_project,
-        library=example_library,
-        image_name="ohserver-rust",
-        agent=agent_instance,
-    )
+    if not out_path.exists():
+        exam = generate_exam(
+            project=example_project,
+            library=example_library,
+            image_name="ohserver-rust",
+            agent=agent_instance,
+        )
+        exam.save(out_path)
+        logger.info(f"Generated Exam ID: {exam.id}")
+        logger.info(f"Solution Commit: {exam.solution_commit}")
+        logger.info(f"Problem Commit: {exam.problem_commit}")
+        logger.debug(f"Question Preview: {exam.question[:100]}...")
+        logger.info(f"Exam saved: {out_path}")
+    else:
+        exam = CodingExam.load(out_path)
+        logger.info(f"Loaded Exam ID: {exam.id}")
+        logger.info(f"Solution Commit: {exam.solution_commit}")
+        logger.info(f"Problem Commit: {exam.problem_commit}")
+        logger.debug(f"Question Preview: {exam.question[:100]}...")
 
-    logger.info(f"Generated Exam ID: {exam.id}")
-    logger.info(f"Commit Hash: {exam.commit}")
-    logger.debug(f"Question Preview: {exam.question[:100]}...")
+    # Demonstrate solving the exam in dual-mode
+    logger.info("--- Starting Dual-Mode Solver Phase ---")
+
+    # # 1. Without library source code (Black box)
+    # logger.info("Setting 1: Solving WITHOUT library source code access")
+    # solved_no_lib = solve_exam(exam, agent_instance, with_library=False)
+
+    # 2. With library source code (White box)
+    logger.info("Setting 2: Solving WITH library source code access")
+    solved_with_lib = solve_exam(exam, agent_instance, with_library=True)
+
+    # if solved_no_lib:
+    #     logger.success("Solver successfully completed the exam WITHOUT library source!")
+    # else:
+    #     logger.error("Solver failed to complete the exam WITHOUT library source.")
+
+    if solved_with_lib:
+        logger.success("Solver successfully completed the exam WITH library source!")
+    else:
+        logger.error("Solver failed to complete the exam WITH library source.")
+
     logger.success("All done!")
