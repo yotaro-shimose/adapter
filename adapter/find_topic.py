@@ -4,7 +4,7 @@ from pathlib import Path
 from textwrap import dedent
 
 from agents.model_settings import ModelSettings
-from oai_wrapper.agent import AgentWrapper
+from oai_utils.agent import AgentWrapper
 
 
 async def find_topics(local_path: Path, file_path: str) -> Topics:
@@ -16,7 +16,10 @@ async def find_topics(local_path: Path, file_path: str) -> Topics:
 You are a curriculum designer.
 Given a local path of cloned repository and a specific file path inside the repository, your task is to create a curriculum for learners for the library based on the content of the provided file path.
 You have access to a filesystem MCP server that allows you to query repository contents.
-You should first get the content of the specified file and respond with an exhaustive list of concepts or topics in the document to learn for the new library user.
+You should get the content of the specified file and respond with an exhaustive list of concepts or topics in the document to learn for the new library user.
+
+Each topic will be used for creating exercises by another process.
+Some document includes information not useful for library learnes such as contribution guides. You can return empty list in that case.
 
 Your response should be structured as following:
 ```json

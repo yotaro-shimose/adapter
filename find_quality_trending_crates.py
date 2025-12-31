@@ -43,7 +43,7 @@ def main():
         .agg(pl.min("created_at").alias("repo_start_date"))
         .collect()
     )
-    old_repo_cutoff = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    old_repo_cutoff = datetime(2024, 7, 1, tzinfo=timezone.utc)
     new_repos = repo_start_dates.filter(pl.col("repo_start_date") >= old_repo_cutoff)
 
     # Filter crates to only those in new repos
