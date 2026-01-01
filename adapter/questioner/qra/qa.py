@@ -3,7 +3,7 @@ from oai_utils.agent import AgentWrapper, AgentRunFailure, AgentsSDKModel
 from tenacity import AsyncRetrying, stop_after_attempt, retry_if_exception_type
 from adapter.models.problems import QAProblem
 from agents.mcp.server import MCPServerStdio
-from adapter.models.topics import Topic
+from adapter.topic.topics import Topic
 from pathlib import Path
 from agents.model_settings import ModelSettings
 

@@ -35,6 +35,7 @@ build-backend = "hatchling.build"
 
 [tool.pyrefly]
 search-path = ["./oai_utils", "./async_utils"]
+project-excludes = ["software-agent-sdk"]
 
 [tool.uv]
 no-binary-package = ["flash-attn"]

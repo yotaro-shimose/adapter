@@ -1,64 +1,19 @@
-from adapter.questioner.reasoner import hindsight_reasoning_retriable
-from adapter.utils.async_util import gather_with_semaphore
+from adapter.topic.filtering import is_useful_for_users
+from adapter.questioner.qra.reasoner import hindsight_reasoning_retriable
+from async_utils import gather_with_semaphore
 from adapter.models.problems import QRA
-from adapter.questioner.qa import create_multiple_qas_retriable
-from adapter.questioner.coding import ProblemVerificationError
+from adapter.questioner.qra.qa import create_multiple_qas_retriable
 from oai_utils.agent import AgentWrapper, AgentRunFailure, AgentsSDKModel
 from adapter.models.types import ProblemType
 from pydantic.main import BaseModel
 from agents.mcp.server import MCPServerStdio
-from adapter.models.topics import Topic
+from adapter.topic.topics import Topic
 from pathlib import Path
 from loguru import logger
 
 
 class DispatchResult(BaseModel):
     problem_type: ProblemType
-
-
-class UsefulnessResult(BaseModel):
-    is_useful: bool
-    reason: str
-
-
-async def is_useful_for_users(topic: Topic, model: AgentsSDKModel) -> bool:
-    agent = AgentWrapper[UsefulnessResult].create(
-        name="topic_usefulness_checker",
-        instructions="""\
-You are an expert educator and technical writer.
-Your task is to determine if a given topic from library documentation is useful for library learners (users who want to learn how to use the library).
-
-A topic is NOT useful if it is about:
-1. How to contribute to the library (e.g., development setup, pull request guidelines).
-2. LICENSE information.
-3. Changelogs or release notes.
-4. Internal architecture that users don't need to know.
-5. Administrative or project management details.
-
-A topic IS useful if it describes:
-1. Features, functions, classes, modules or concepts of the library.
-2. How to use specific parts of the library.
-3. Tutorials, examples, or guides for users.
-
-### Output JSON Schema
-{
-    "is_useful": "boolean. True if the topic is useful for library learners, False otherwise.",
-    "reason": "A brief explanation of why the topic is or is not useful."
-}""",
-        output_type=UsefulnessResult,
-        model=model,
-    )
-    ret = await agent.run(
-        input=f"""\
-Based on the following topic title and description, determine if it is useful for library learners.
-Topic title: {topic.title}
-Topic description: {topic.description}""",
-    )
-    result = ret.final_output()
-    logger.info(
-        f"Topic '{topic.title}' usefulness: {result.is_useful}. Reason: {result.reason}"
-    )
-    return result.is_useful
 
 
 async def dispatch_topic(topic: Topic, model: AgentsSDKModel) -> ProblemType:
@@ -139,9 +94,6 @@ async def questioner(
                 f"Unknown problem type '{problem_type}' for topic: {topic.title}"
             )
             return None
-    except ProblemVerificationError:
-        logger.warning(f"Failed to create a valid task for topic: {topic.title}")
-        return None
     except AgentRunFailure as e:
         logger.warning(f"Agent failed to create task for topic: {topic.title}: {e}")
         return None

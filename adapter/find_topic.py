@@ -1,4 +1,6 @@
-from adapter.models.topics import Topics
+from oai_utils.agent import AgentsSDKModel
+from oai_utils.client import get_aoai
+from adapter.topic.topics import Topics
 from oai_utils.mcp.filesystem import filesystem_mcp
 from pathlib import Path
 from textwrap import dedent
@@ -7,7 +9,11 @@ from agents.model_settings import ModelSettings
 from oai_utils.agent import AgentWrapper
 
 
-async def find_topics(local_path: Path, file_path: str) -> Topics:
+async def find_topics(
+    local_path: Path, file_path: str, model: AgentsSDKModel | None = None
+) -> Topics:
+    if model is None:
+        model = get_aoai("gpt-5-mini")
     async with filesystem_mcp([str(local_path)]) as filesystem:
         agent = AgentWrapper[Topics].create(
             name="topic_finder",
@@ -37,7 +43,7 @@ Based on your list, another agent will dive deeper for each topic and create exe
             mcp_servers=[
                 filesystem,
             ],
-            model="gpt-5-mini",
+            model=model,
             output_type=Topics,
             model_settings=ModelSettings(parallel_tool_calls=True),
         )

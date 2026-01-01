@@ -1,3 +1,4 @@
+from oai_utils.client import get_aoai
 from adapter.models.problems import QRA
 from swerex.runtime.abstract import Command
 from swerex.runtime.abstract import WriteFileRequest
@@ -64,7 +65,7 @@ You must output a JSON object with:
     agent = AgentWrapper[QRAVerificationOutput].create(
         name="qra_evaluator",
         instructions=prompt,
-        model="gpt-5-mini",
+        model=get_aoai("gpt-5-mini"),
         output_type=QRAVerificationOutput,
     )
 

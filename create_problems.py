@@ -11,7 +11,7 @@ from tqdm.asyncio import tqdm_asyncio
 from oai_utils.mcp.filesystem import filesystem_mcp
 
 from adapter.find_topic import find_topics
-from adapter.models.topics import TopicEntities, TopicEntity
+from adapter.topic.topics import TopicEntities, TopicEntity
 from adapter.utils.async_util import gather_with_semaphore
 from adapter.models.config import ProblemCreationConfig
 

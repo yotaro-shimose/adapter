@@ -1,3 +1,5 @@
+from oai_utils.agent import AgentsSDKModel
+from oai_utils.client import get_aoai
 from pathlib import Path
 from textwrap import dedent
 
@@ -12,7 +14,11 @@ class FilePathsList(Savable):
     file_paths: list[str]
 
 
-async def list_document_filepaths(local_dir: Path) -> FilePathsList:
+async def list_document_filepaths(
+    local_dir: Path, model: AgentsSDKModel | None = None
+) -> FilePathsList:
+    if model is None:
+        model = get_aoai("gpt-5-mini")
     async with filesystem_mcp([str(local_dir)]) as filesystem:
         agent = AgentWrapper[FilePathsList].create(
             name="file_path_finder",
@@ -40,7 +46,7 @@ Your response should be structured as following:
             mcp_servers=[
                 filesystem,
             ],
-            model="gpt-5-mini",
+            model=model,
             output_type=FilePathsList,
             model_settings=ModelSettings(parallel_tool_calls=True),
         )
