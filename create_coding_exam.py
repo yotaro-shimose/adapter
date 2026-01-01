@@ -51,7 +51,7 @@ class Config(BaseModel):
             library_dir=Path("repositories/numrs").absolute(),
             topic_extraction_semaphore=3,
             exam_generation_semaphore=5,
-            max_topics=10,
+            max_topics=3,
             batch_size=30,
             output_file=Path("exams.csv"),
             topics_file=Path("topics.json"),
@@ -188,78 +188,6 @@ Only leave empty function signatures if they are strictly necessary for the test
             problem_commit=problem_commit_hash,
             question=question,
         )
-
-
-def solve_exam(
-    exam: CodingExam,
-    agent: Agent,
-    with_library: bool = True,
-) -> bool:
-    """Orchestrate the exam solving process using an AI agent."""
-    logger.info(
-        f"Starting exam solving (with_library={with_library}) for exam ID: {exam.id}"
-    )
-
-    # Set up a temporal repository at the problem_commit
-    # We use the library info stored in the exam
-    with RustCodingEnvironment(
-        branch_name=gen_id(f"solve-{'with-lib' if with_library else 'no-lib'}"),
-        project=exam.project,
-        library=exam.library,
-        image=exam.image_name,
-    ) as env:
-        # Checkout the problem commit
-        logger.info(f"Checking out problem commit: {exam.problem_commit}")
-        env.cloned_repo.checkout(exam.problem_commit)
-
-        workspace = env.workspace
-        empty_response_detector = EmptyResponseDetector()
-
-        # Phase 1: Ask agent to create question, solution, and test
-        conversation = Conversation(
-            agent=agent, workspace=workspace, callbacks=[empty_response_detector]
-        )
-        empty_response_detector.set_conversation(conversation)
-
-        lib_info = (
-            f"The library source code is already available for your reference in `repositories/{exam.library.name}/`."
-            if with_library
-            else f"The library source code is NOT available for your reference. You must solve this using your internal knowledge of `{exam.library.name}`."
-        )
-
-        prompt = f"""\
-<task>
-You are a rust developer tasked with solving a coding exam.
-Here is the question:
-{exam.question}
-
-The project is already set up for you. 
-{lib_info}
-
-You should:
-1. Implement the solution in `src/lib.rs`.
-2. Run the tests in `tests/` to verify your solution (you might need to install `{exam.library.name}` dependency if you need it, but the library repository itself is hidden from solver if mentioned above).
-3. Once tests pass, you are done.
-</task>
-"""
-        conversation.send_message(prompt)
-        conversation.run()
-
-        # Final verification with cargo test
-        logger.info("Running final verification with cargo test")
-        try:
-            subprocess.run(
-                ["cargo", "test"],
-                cwd=env.cloned_repo.local_dir,
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            logger.success(f"Exam {exam.id} solved successfully!")
-            return True
-        except subprocess.CalledProcessError as e:
-            logger.error(f"Final verification failed: {e.stderr or e.stdout}")
-            return False
 
 
 async def async_main():

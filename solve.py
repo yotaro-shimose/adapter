@@ -6,7 +6,7 @@ from oai_utils.vllm import VLLMSetup
 from oai_utils.agent import AgentWrapper
 from oai_utils.runresult import SimpleReasoningItem
 from adapter.models.problems import QRADataset, QAProblem, QRA
-from adapter.questioner.evaluater import evaluate_qa
+from adapter.questioner.qra.evaluater import evaluate_qa
 from adapter.utils.savable import Savable
 from async_utils import gather_with_semaphore
 

@@ -153,6 +153,17 @@ class RustCodingEnvironment(BaseModel):
         if cargo_git.exists():
             mounts[str(cargo_git)] = "/usr/local/cargo/git"
 
+        # Add sccache mount
+        sccache_dir = Path("/var/tmp/sccache")
+        try:
+            sccache_dir.mkdir(parents=True, exist_ok=True)
+            sccache_dir.chmod(0o777)
+        except Exception as e:
+            logger.warning(f"Could not create/chmod sccache dir {sccache_dir}: {e}")
+
+        if sccache_dir.exists():
+            mounts[str(sccache_dir)] = "/var/tmp/sccache"
+
         # 3. Initialize and start workspace
         machine = platform.machine().lower()
         container_platform = (

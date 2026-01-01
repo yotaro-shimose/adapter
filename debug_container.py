@@ -2,7 +2,6 @@ import time
 import signal
 import sys
 import argparse
-import subprocess
 from pathlib import Path
 from dotenv import load_dotenv
 from adapter.exam.renv import RustCodingEnvironment
@@ -12,10 +11,8 @@ import polars as pl
 # Import from the sibling script
 from create_coding_exam import (
     Config,
-    Config,
     CodingExam,
     GitRepository,
-    detect_platform,
     gen_id,
 )
 
