@@ -14,6 +14,16 @@ from adapter.exam.repository import GitRepository
 from adapter.exam.workspace import MountableDockerWorkspace
 
 
+class TestResult(BaseModel):
+    is_success: bool
+    stdout: str
+    stderr: str
+
+    @property
+    def output(self) -> str:
+        return self.stdout + self.stderr
+
+
 class TemporalCodingRepository(BaseModel):
     branch_name: str
     project: GitRepository
@@ -116,6 +126,7 @@ class RustCodingEnvironment(BaseModel):
     image: str
     extra_mounts: dict[str, str] = Field(default_factory=dict)
     forward_env: list[str] = Field(default_factory=list)
+    vllm_port: int | None = None
 
     # Internal state
     _temp_repo: TemporalCodingRepository | None = None
@@ -170,18 +181,27 @@ class RustCodingEnvironment(BaseModel):
             "linux/arm64" if "arm" in machine or "aarch64" in machine else "linux/amd64"
         )
 
+        extra_env = {}
+        enable_host_gateway = False
+        if self.vllm_port is not None:
+            extra_env["VLLM_HOST"] = "host.docker.internal"
+            extra_env["VLLM_PORT"] = str(self.vllm_port)
+            enable_host_gateway = True
+
         self._workspace = MountableDockerWorkspace(
             server_image=self.image,
             platform=container_platform,
             mount_dir=str(self._temp_repo.local_dir),
             extra_mounts=mounts,
             forward_env=self.forward_env,
+            extra_env=extra_env,
+            enable_host_gateway=enable_host_gateway,
         )
         self._exit_stack.enter_context(self._workspace)
 
         return self
 
-    def push_exam(self, message: str, run_tests: bool = True) -> str | None:
+    def push_exam(self, message: str) -> str | None:
         """Commit changes, push to original project, and return commit hash."""
         logger.info(f"Pushing coding exam commit: {message} ({self.branch_name})")
         # 1. Check for changes
@@ -192,33 +212,36 @@ class RustCodingEnvironment(BaseModel):
             # If no changes, still return the current commit hash
             return None
 
-        # 2. Verify with cargo test if requested
-        if run_tests:
-            logger.debug("Running cargo test to verify solution")
-            try:
-                subprocess.run(
-                    ["cargo", "test"],
-                    cwd=self.cloned_repo.local_dir,
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
-            except subprocess.CalledProcessError as e:
-                msg = f"Cargo test failed: {e.stderr or e.stdout}"
-                logger.error(msg)
-                raise TemporalCodingRepositoryError(msg) from e
-
-        # 3. Commit changes
+        # 2. Commit changes
         logger.debug(f"Committing changes: {message}")
         self.cloned_repo.commit(message)
 
-        # 4. Push branch to origin
+        # 3. Push branch to origin
         logger.debug(f"Pushing branch {self.branch_name} to origin")
         self.cloned_repo.push("origin", self.branch_name)
 
         commit_hash = self.cloned_repo.rev_parse()
         logger.success(f"Commit pushed: {commit_hash}")
         return commit_hash
+
+    def run_test(self) -> TestResult:
+        try:
+            process = subprocess.run(
+                ["cargo", "test"],
+                cwd=self.cloned_repo.local_dir,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            return TestResult(
+                is_success=process.returncode == 0,
+                stdout=process.stdout,
+                stderr=process.stderr,
+            )
+        except Exception as e:
+            msg = f"Cargo test execution failed: {e}"
+            logger.error(msg)
+            raise TemporalCodingRepositoryError(msg) from e
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
         self._exit_stack.__exit__(exc_type, exc_val, exc_tb)

@@ -26,7 +26,8 @@ dependencies = [
     "openhands-workspace>=1.6.0",
     "openhands-agent-server>=1.6.0",
     "vllm>=0.11.0",
-    "litellm>=1.80.11",
+    "litellm>=1.74.0",
+    "agentlightning[verl]==0.3.0",
 ]
 
 [build-system]
@@ -40,6 +41,7 @@ project-excludes = ["software-agent-sdk"]
 [tool.uv]
 no-binary-package = ["flash-attn"]
 no-build-isolation-package = ["flash-attn"]
+override-dependencies = ["rich>=13.9.4"]
 
 [tool.uv.workspace]
 members = [

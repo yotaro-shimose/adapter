@@ -1,7 +1,8 @@
+from openhands.sdk.event.llm_convertible.message import MessageEvent
+from adapter.utils.id import gen_id
 import asyncio
 import os
 import platform
-import subprocess
 import uuid
 from dataclasses import dataclass
 from itertools import chain
@@ -29,7 +30,7 @@ from adapter.topic.topics import TopicEntities, TopicEntity
 from async_utils import gather_with_semaphore
 
 
-class Config(BaseModel):
+class ExamConfig(BaseModel):
     model_name: str
     image_name: str
     project_dir: Path
@@ -51,15 +52,11 @@ class Config(BaseModel):
             library_dir=Path("repositories/numrs").absolute(),
             topic_extraction_semaphore=3,
             exam_generation_semaphore=5,
-            max_topics=3,
+            max_topics=30,
             batch_size=30,
             output_file=Path("exams.csv"),
             topics_file=Path("topics.json"),
         )
-
-
-def gen_id(prefix: str):
-    return f"{prefix}-{uuid.uuid4()}"
 
 
 def detect_platform() -> str:
@@ -80,10 +77,11 @@ class EmptyResponseDetector:
         self.conversation = conversation
 
     def __call__(self, event: Event) -> None:
-        if self.conversation is None:
-            raise ValueError("The EmptyResponseDetector is not initialized yet used")
-
-        if "[no text content]" in str(event.visualize):
+        if isinstance(event, MessageEvent) and "[no text content]" in str(
+            event.visualize
+        ):
+            if self.conversation is None:
+                raise ValueError("Conversation is not set")
             self.counts += 1
             if self.counts > self.limit:
                 self.conversation.pause()
@@ -141,11 +139,19 @@ Then
 - Do not refer to the documents/source code of `{library.name}` repository in your question.
     - The `{library.name}` repository is not visible to solver. Solver is expected to remember the usage of the library.
     - For example testing solver's understanding about specific functions is good, but asking solver to read the source code is not good.
+- The tests should be strict enough to fail when solver's solution is wrong.
 - Tests should be located in tests/ directory which will be hidden from solver.
+- Write down the question in README.md file.
 </Guidelines>
 """
         conversation.send_message(prompt)
         conversation.run()
+
+        # Verify solution
+        test_result = env.run_test()
+        if not test_result.is_success:
+            logger.error(f"Generated solution failed tests:\n{test_result.output}")
+            return None
 
         # Commit and push solution
         solution_commit_hash = env.push_exam(
@@ -161,7 +167,7 @@ Then
 Now, please clean the solution from lib.rs. 
 The goal is to leave the lib.rs in a state where the solver needs to implement the solution, but the tests you wrote in tests/ directory still exist and can be used to verify the solver's work.
 You should remove the implementation logic and also remove all imports. The solver is expected to know which modules and types they need to import.
-Only leave empty function signatures if they are strictly necessary for the tests to even start compiling, but if possible, let the solver define them as well.
+Only leave minimal signature so that agent can tackle the problem without seeing the test code.
 </task>
 """
         conversation.send_message(clean_prompt)
@@ -169,7 +175,7 @@ Only leave empty function signatures if they are strictly necessary for the test
 
         # Commit and push problem (without running tests, as it's now "broken" by design)
         problem_commit_hash = env.push_exam(
-            message=f"feat: coding exam problem {env.branch_name}", run_tests=False
+            message=f"feat: coding exam problem {env.branch_name}"
         )
         if not problem_commit_hash:
             logger.error("Failed to push problem commit")
@@ -192,7 +198,7 @@ Only leave empty function signatures if they are strictly necessary for the test
 
 async def async_main():
     load_dotenv()
-    config = Config.default()
+    config = ExamConfig.default()
 
     # Initialize basic components
     llm = LLM(

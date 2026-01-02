@@ -20,6 +20,8 @@ class MountableDockerWorkspace(DockerWorkspace):
     extra_mounts: dict[str, str] = Field(
         default_factory=dict
     )  # host_dir: container_dir
+    extra_env: dict[str, str] = Field(default_factory=dict)
+    enable_host_gateway: bool = Field(default=False)
 
     @override
     def _start_container(self, image: str, context: Any) -> None:
@@ -69,6 +71,9 @@ class MountableDockerWorkspace(DockerWorkspace):
             if key in os.environ:
                 flags += ["-e", f"{key}={os.environ[key]}"]
 
+        for key, value in self.extra_env.items():
+            flags += ["-e", f"{key}={value}"]
+
         if self.mount_dir:
             mount_path = "/workspace"
             flags += ["-v", f"{self.mount_dir}:{mount_path}"]
@@ -80,6 +85,9 @@ class MountableDockerWorkspace(DockerWorkspace):
 
         for host_dir, container_dir in self.extra_mounts.items():
             flags += ["-v", f"{host_dir}:{container_dir}"]
+
+        if self.enable_host_gateway:
+            flags += ["--add-host", "host.docker.internal:host-gateway"]
 
         ports = ["-p", f"{self.host_port}:8000"]
         if self.extra_ports:

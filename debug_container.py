@@ -1,3 +1,4 @@
+from adapter.exam.exam import load_exam_from_csv
 import time
 import signal
 import sys
@@ -10,7 +11,7 @@ import polars as pl
 
 # Import from the sibling script
 from create_coding_exam import (
-    Config,
+    ExamConfig,
     CodingExam,
     GitRepository,
     gen_id,
@@ -22,7 +23,9 @@ def handle_interrupt(sig, frame):
     sys.exit(0)
 
 
-def launch_debug_container(config: Config, exam: CodingExam | None = None):
+def launch_debug_container(
+    config: ExamConfig, exam: CodingExam | None = None, vllm_port: int | None = None
+):
     """
     Launch a temporal docker container for manual debugging.
     The container will have the project and library mounted/cloned.
@@ -54,6 +57,7 @@ def launch_debug_container(config: Config, exam: CodingExam | None = None):
             project=project_repo,
             library=library_repo,
             image=config.image_name,
+            vllm_port=vllm_port,
         ) as env:
             logger.info(f"Rust environment set up at: {env.cloned_repo.local_dir}")
 
@@ -67,6 +71,10 @@ def launch_debug_container(config: Config, exam: CodingExam | None = None):
             logger.info("Project is mounted at /workspace")
             logger.info("You can attach to the container using:")
             logger.info(f"  docker exec -it {container_id} /bin/bash")
+            if vllm_port is not None:
+                logger.info(
+                    f"Host vLLM should be accessible at http://host.docker.internal:{vllm_port}"
+                )
 
             logger.info("Press Ctrl+C to stop the container and cleanup.")
 
@@ -81,41 +89,17 @@ def launch_debug_container(config: Config, exam: CodingExam | None = None):
         raise
 
 
-def load_exam_from_csv(csv_path: Path, exam_id: str, config: Config) -> CodingExam:
-    df = pl.read_csv(csv_path)
-    exam_row = df.filter(pl.col("id") == exam_id)
-
-    if exam_row.is_empty():
-        raise ValueError(f"Exam ID {exam_id} not found in {csv_path}")
-
-    row = exam_row.to_dict(as_series=False)
-    # Extract values (first item of the list for each column)
-    return CodingExam(
-        id=row["id"][0],
-        image_name=row.get("image_name", [config.image_name])[
-            0
-        ],  # Use image_name from CSV or fallback to config
-        project=GitRepository(
-            name="rust-benchmarks", local_dir=config.project_dir
-        ),  # Reconstruct assuming same project
-        library=GitRepository(
-            name=config.library_dir.name, local_dir=config.library_dir
-        ),  # Reconstruct assuming same library
-        # Note: In a real scenario you might need to infer repo names from CSV if they vary
-        solution_commit=row["solution_commit"][0],
-        problem_commit=row["problem_commit"][0],
-        question=row["question"][0],
-    )
-
-
 def main():
     load_dotenv()
-    config = Config.default()
+    config = ExamConfig.default()
 
     parser = argparse.ArgumentParser(
         description="Launch a debug container for OpenHands"
     )
     parser.add_argument("--exam-id", type=str, help="ID of the exam to debug")
+    parser.add_argument(
+        "--vllm-port", type=int, help="Port of the vLLM server running on host"
+    )
     args = parser.parse_args()
 
     signal.signal(signal.SIGINT, handle_interrupt)
@@ -124,7 +108,13 @@ def main():
     if args.exam_id:
         try:
             logger.info(f"Loading exam {args.exam_id} from {config.output_file}...")
-            exam = load_exam_from_csv(config.output_file, args.exam_id, config)
+            exam = load_exam_from_csv(
+                config.output_file,
+                exam_id=args.exam_id,
+                image_name=config.image_name,
+                project_dir=config.project_dir,
+                library_dir=config.library_dir,
+            )
         except Exception as e:
             logger.error(f"Failed to load exam: {e}")
             sys.exit(1)
@@ -151,7 +141,7 @@ def main():
             )
 
     try:
-        launch_debug_container(config, exam)
+        launch_debug_container(config, exam, vllm_port=args.vllm_port)
     except SystemExit:
         pass
 

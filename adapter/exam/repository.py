@@ -1,3 +1,4 @@
+from typing import TypedDict
 from adapter.exam.exception import TemporalCodingRepositoryError
 import subprocess
 from pathlib import Path
@@ -66,3 +67,8 @@ class GitRepository(BaseModel):
             subprocess.run(["chmod", "-R", "777", str(self.local_dir)], check=True)
         except subprocess.CalledProcessError as e:
             logger.error(f"Failed to apply chmod -R 777: {e.stderr or e.stdout}")
+
+
+class GitRepositoryDict(TypedDict):
+    name: str
+    local_dir: Path

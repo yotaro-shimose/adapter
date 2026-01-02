@@ -22,6 +22,7 @@ A topic is NOT useful if it is about:
 3. Changelogs or release notes.
 4. Internal architecture that users don't need to know.
 5. Administrative or project management details.
+6. Can not be tested as a form of programming exercise.
 
 A topic IS useful if it describes:
 1. Features, functions, classes, modules or concepts of the library.
